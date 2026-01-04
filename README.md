@@ -6,6 +6,28 @@ A macOS app that automatically parses recipes from websites and creates concurre
 ![Swift](https://img.shields.io/badge/Swift-6.2-orange)
 ![SwiftUI](https://img.shields.io/badge/SwiftUI-Latest-green)
 
+## 🚀 Quick Start - Run Locally
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/abiz1017/cooking-timer-app.git
+cd cooking-timer-app
+
+# 2. Open in Xcode
+open Package.swift
+
+# 3. Press ⌘R to build and run
+```
+
+**Or via command line:**
+```bash
+swift build && swift run CookingTimerApp
+```
+
+📖 **Detailed setup guide**: See [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)
+
+---
+
 ## The Problem
 
 Cooking multiple-step recipes is hard:
