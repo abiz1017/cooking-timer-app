@@ -13,16 +13,21 @@ A macOS app that automatically parses recipes from websites and creates concurre
 git clone https://github.com/abiz1017/cooking-timer-app.git
 cd cooking-timer-app
 
-# 2. Open in Xcode
+# 2. (Optional) Set Gemini API key for AI-powered parsing
+export GEMINI_API_KEY="your-api-key-here"
+
+# 3. Open in Xcode
 open Package.swift
 
-# 3. Press ⌘R to build and run
+# 4. Press ⌘R to build and run
 ```
 
 **Or via command line:**
 ```bash
 swift build && swift run CookingTimerApp
 ```
+
+> **Note**: The app works without an API key using Schema.org and HTML scraping. Gemini Flash is used as a fallback for difficult sites. Without an API key, a sample recipe will be shown.
 
 📖 **Detailed setup guide**: See [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md)
 

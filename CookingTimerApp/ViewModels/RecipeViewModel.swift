@@ -36,8 +36,9 @@ class RecipeViewModel: ObservableObject {
 
     init(parserService: RecipeParserService? = nil) {
         // Create parser service with LLM fallback enabled
-        // In production, pass API key from environment or settings
-        self.parserService = parserService ?? RecipeParserService(enableLLMFallback: true, anthropicAPIKey: nil)
+        // Read Gemini API key from environment variable
+        let geminiAPIKey = ProcessInfo.processInfo.environment["GEMINI_API_KEY"]
+        self.parserService = parserService ?? RecipeParserService(enableLLMFallback: true, anthropicAPIKey: geminiAPIKey)
     }
 
     // MARK: - Recipe Fetching

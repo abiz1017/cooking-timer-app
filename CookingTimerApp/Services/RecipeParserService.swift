@@ -497,28 +497,439 @@ enum SchemaInstructions: Codable {
     }
 }
 
-// MARK: - HTML Scraper (Placeholder for now)
+// MARK: - HTML Scraper
+
+import SwiftSoup
 
 struct HTMLScraper {
     func extractRecipe(from html: String, sourceURL: URL) throws -> Recipe {
-        // TODO: Implement HTML scraping with SwiftSoup
-        // For now, throw error to fall back to LLM
-        throw RecipeParseError.parsingFailed("HTML scraping not yet implemented")
+        do {
+            let doc = try SwiftSoup.parse(html)
+
+            // Try to extract recipe title
+            let title = try extractTitle(from: doc)
+
+            // Try to extract recipe steps
+            let steps = try extractSteps(from: doc)
+
+            guard !steps.isEmpty else {
+                throw RecipeParseError.parsingFailed("No recipe steps found in HTML")
+            }
+
+            // Calculate total time from steps
+            let totalTime = steps.reduce(0) { $0 + $1.duration }
+
+            return Recipe(
+                title: title,
+                sourceURL: sourceURL,
+                steps: steps,
+                totalTime: totalTime
+            )
+        } catch let error as RecipeParseError {
+            throw error
+        } catch {
+            throw RecipeParseError.parsingFailed("HTML parsing failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func extractTitle(from doc: Document) throws -> String {
+        // Try common recipe title patterns
+        let titleSelectors = [
+            "h1.recipe-title",
+            "h1[itemprop='name']",
+            "h1.heading-content",
+            ".recipe-header h1",
+            "article h1",
+            "h1"
+        ]
+
+        for selector in titleSelectors {
+            if let element = try? doc.select(selector).first(),
+               let text = try? element.text(),
+               !text.isEmpty {
+                return text
+            }
+        }
+
+        // Fallback to page title
+        if let titleElement = try? doc.select("title").first(),
+           let title = try? titleElement.text() {
+            return title.components(separatedBy: "|").first?.trimmingCharacters(in: .whitespaces) ?? title
+        }
+
+        return "Untitled Recipe"
+    }
+
+    private func extractSteps(from doc: Document) throws -> [RecipeStep] {
+        var steps: [RecipeStep] = []
+
+        // Try common recipe instruction patterns
+        let instructionSelectors = [
+            ".recipe-instructions ol li",
+            ".instructions ol li",
+            "[itemprop='recipeInstructions'] ol li",
+            ".recipe-steps li",
+            ".directions ol li",
+            "ol.recipe-directions li"
+        ]
+
+        for selector in instructionSelectors {
+            if let elements = try? doc.select(selector),
+               !elements.isEmpty() {
+                for (index, element) in elements.enumerated() {
+                    if let text = try? element.text(),
+                       !text.isEmpty && text.count > 10 { // Filter out very short items
+                        let duration = extractDuration(from: text)
+                        let stepType = inferStepType(from: text)
+
+                        steps.append(RecipeStep(
+                            description: text,
+                            duration: duration,
+                            stepType: stepType,
+                            displayOrder: index
+                        ))
+                    }
+                }
+
+                if !steps.isEmpty {
+                    break // Found valid steps, stop searching
+                }
+            }
+        }
+
+        // If no ordered list found, try paragraphs
+        if steps.isEmpty {
+            let paragraphSelectors = [
+                ".instructions p",
+                ".recipe-instructions p",
+                "[itemprop='recipeInstructions'] p"
+            ]
+
+            for selector in paragraphSelectors {
+                if let elements = try? doc.select(selector),
+                   !elements.isEmpty() {
+                    for (index, element) in elements.enumerated() {
+                        if let text = try? element.text(),
+                           !text.isEmpty && text.count > 20 {
+                            let duration = extractDuration(from: text)
+                            let stepType = inferStepType(from: text)
+
+                            steps.append(RecipeStep(
+                                description: text,
+                                duration: duration,
+                                stepType: stepType,
+                                displayOrder: index
+                            ))
+                        }
+                    }
+
+                    if !steps.isEmpty {
+                        break
+                    }
+                }
+            }
+        }
+
+        return steps
+    }
+
+    private func extractDuration(from text: String) -> TimeInterval {
+        // Try to parse duration from text
+        if let duration = DurationParser.parseNaturalDuration(text) {
+            return duration
+        }
+
+        // Try to estimate from cooking terms
+        if let duration = DurationParser.estimateDurationForCookingTerm(text) {
+            return duration
+        }
+
+        // Default: 5 minutes per step
+        return 300
+    }
+
+    private func inferStepType(from text: String) -> StepType {
+        let lowercased = text.lowercased()
+
+        if lowercased.contains("chop") || lowercased.contains("dice") || lowercased.contains("slice") ||
+           lowercased.contains("mince") || lowercased.contains("peel") || lowercased.contains("mix") {
+            return .preparation
+        }
+
+        if lowercased.contains("bake") || lowercased.contains("oven") || lowercased.contains("roast") {
+            return .baking
+        }
+
+        if lowercased.contains("sauté") || lowercased.contains("fry") || lowercased.contains("boil") ||
+           lowercased.contains("simmer") || lowercased.contains("cook") {
+            return .cooking
+        }
+
+        if lowercased.contains("rest") || lowercased.contains("cool") || lowercased.contains("chill") ||
+           lowercased.contains("marinate") {
+            return .resting
+        }
+
+        if lowercased.contains("serve") || lowercased.contains("plate") || lowercased.contains("garnish") {
+            return .assembly
+        }
+
+        return .preparation
     }
 }
 
-// MARK: - LLM Recipe Parser (Placeholder for now)
+// MARK: - LLM Recipe Parser (Gemini Flash)
 
 class LLMRecipeParser {
     private let apiKey: String?
+    private let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
     init(apiKey: String?) {
         self.apiKey = apiKey
     }
 
     func extractRecipe(from html: String, sourceURL: URL) async throws -> Recipe {
-        // TODO: Implement Claude API call for recipe extraction
-        // For now, throw error
-        throw RecipeParseError.parsingFailed("LLM extraction not yet implemented")
+        guard let apiKey = apiKey, !apiKey.isEmpty else {
+            // No API key - return a sample recipe for testing
+            return createSampleRecipe(sourceURL: sourceURL)
+        }
+
+        // Clean HTML - remove scripts, styles, etc.
+        let cleanedHTML = cleanHTML(html)
+
+        // Build the prompt
+        let prompt = """
+        Extract the recipe from this HTML content and return it as JSON with this exact structure:
+        {
+          "title": "recipe title",
+          "steps": [
+            {
+              "description": "step description",
+              "duration_seconds": 300,
+              "step_type": "preparation|cooking|baking|resting|assembly"
+            }
+          ],
+          "total_time_seconds": 1800
+        }
+
+        HTML content:
+        \(cleanedHTML.prefix(8000))
+
+        Important:
+        - Extract ALL cooking steps in order
+        - Estimate duration_seconds for each step (use common cooking times)
+        - Classify each step type accurately
+        - If duration is mentioned in text, use it. Otherwise estimate.
+        - Return ONLY valid JSON, no markdown or explanations.
+        """
+
+        // Make API call
+        let recipe = try await callGeminiAPI(prompt: prompt, sourceURL: sourceURL)
+        return recipe
     }
+
+    private func callGeminiAPI(prompt: String, sourceURL: URL) async throws -> Recipe {
+        guard let url = URL(string: "\(endpoint)?key=\(apiKey ?? "")") else {
+            throw RecipeParseError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let requestBody: [String: Any] = [
+            "contents": [
+                [
+                    "parts": [
+                        ["text": prompt]
+                    ]
+                ]
+            ],
+            "generationConfig": [
+                "temperature": 0.1,
+                "maxOutputTokens": 2048
+            ]
+        ]
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw RecipeParseError.networkError(URLError(.badServerResponse))
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw RecipeParseError.networkError(URLError(.badServerResponse))
+        }
+
+        // Parse Gemini response
+        let geminiResponse = try JSONDecoder().decode(GeminiResponse.self, from: data)
+
+        guard let text = geminiResponse.candidates?.first?.content.parts.first?.text else {
+            throw RecipeParseError.parsingFailed("No response from Gemini")
+        }
+
+        // Extract JSON from response (in case it's wrapped in markdown)
+        let jsonString = extractJSON(from: text)
+
+        // Parse recipe JSON
+        guard let jsonData = jsonString.data(using: .utf8) else {
+            throw RecipeParseError.invalidData
+        }
+
+        let recipeJSON = try JSONDecoder().decode(GeminiRecipe.self, from: jsonData)
+
+        // Convert to Recipe model
+        let steps = recipeJSON.steps.enumerated().map { index, step in
+            RecipeStep(
+                description: step.description,
+                duration: TimeInterval(step.duration_seconds),
+                stepType: StepType(rawValue: step.step_type) ?? .preparation,
+                displayOrder: index
+            )
+        }
+
+        return Recipe(
+            title: recipeJSON.title,
+            sourceURL: sourceURL,
+            steps: steps,
+            totalTime: TimeInterval(recipeJSON.total_time_seconds)
+        )
+    }
+
+    private func cleanHTML(_ html: String) -> String {
+        var cleaned = html
+
+        // Remove script tags
+        cleaned = cleaned.replacingOccurrences(
+            of: "<script[^>]*>.*?</script>",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+
+        // Remove style tags
+        cleaned = cleaned.replacingOccurrences(
+            of: "<style[^>]*>.*?</style>",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+
+        // Remove comments
+        cleaned = cleaned.replacingOccurrences(
+            of: "<!--.*?-->",
+            with: "",
+            options: [.regularExpression]
+        )
+
+        return cleaned
+    }
+
+    private func extractJSON(from text: String) -> String {
+        // Try to extract JSON from markdown code blocks
+        if let jsonMatch = text.range(of: "```json\\s*(.+?)```", options: .regularExpression) {
+            let jsonText = text[jsonMatch]
+            return String(jsonText)
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Try to find JSON object
+        if let startIndex = text.firstIndex(of: "{"),
+           let endIndex = text.lastIndex(of: "}") {
+            return String(text[startIndex...endIndex])
+        }
+
+        return text
+    }
+
+    private func createSampleRecipe(sourceURL: URL) -> Recipe {
+        // Return a sample recipe for testing when no API key is provided
+        let steps = [
+            RecipeStep(
+                description: "Preheat oven to 375°F (190°C)",
+                duration: 600,
+                stepType: .baking,
+                canRunInParallel: true,
+                displayOrder: 0
+            ),
+            RecipeStep(
+                description: "Chop onions, garlic, and vegetables into small pieces",
+                duration: 300,
+                stepType: .preparation,
+                canRunInParallel: true,
+                displayOrder: 1
+            ),
+            RecipeStep(
+                description: "Heat oil in a large pan over medium heat and sauté onions until translucent",
+                duration: 420,
+                stepType: .cooking,
+                dependsOn: [],
+                displayOrder: 2
+            ),
+            RecipeStep(
+                description: "Add garlic and cook for 1-2 minutes until fragrant",
+                duration: 120,
+                stepType: .cooking,
+                displayOrder: 3
+            ),
+            RecipeStep(
+                description: "Add vegetables and seasonings, cook for 10 minutes",
+                duration: 600,
+                stepType: .cooking,
+                displayOrder: 4
+            ),
+            RecipeStep(
+                description: "Transfer to baking dish and bake for 30 minutes",
+                duration: 1800,
+                stepType: .baking,
+                displayOrder: 5
+            ),
+            RecipeStep(
+                description: "Let rest for 5 minutes before serving",
+                duration: 300,
+                stepType: .resting,
+                displayOrder: 6
+            )
+        ]
+
+        return Recipe(
+            title: "Sample Recipe (Demo Mode)",
+            sourceURL: sourceURL,
+            steps: steps,
+            servings: 4,
+            recipeDescription: "This is a sample recipe for testing. Set GEMINI_API_KEY environment variable to enable real parsing."
+        )
+    }
+}
+
+// MARK: - Gemini API Models
+
+struct GeminiResponse: Codable {
+    let candidates: [GeminiCandidate]?
+}
+
+struct GeminiCandidate: Codable {
+    let content: GeminiContent
+}
+
+struct GeminiContent: Codable {
+    let parts: [GeminiPart]
+}
+
+struct GeminiPart: Codable {
+    let text: String?
+}
+
+struct GeminiRecipe: Codable {
+    let title: String
+    let steps: [GeminiStep]
+    let total_time_seconds: Int
+}
+
+struct GeminiStep: Codable {
+    let description: String
+    let duration_seconds: Int
+    let step_type: String
 }
