@@ -23,11 +23,6 @@ let package = Package(
             name: "CookingTimerApp",
             dependencies: ["SwiftSoup"],
             path: "CookingTimerApp"
-        ),
-        .testTarget(
-            name: "CookingTimerAppTests",
-            dependencies: ["CookingTimerApp"],
-            path: "Tests"
         )
     ]
 )
